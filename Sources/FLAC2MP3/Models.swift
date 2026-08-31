@@ -12,6 +12,7 @@ struct ConversionSettings: Sendable {
     let recursive: Bool
     let quality: MP3Quality
     let requestIntervalSeconds: Double
+    let useMusicBrainz: Bool
     let ignoreMissingEnrichment: Bool
 }
 

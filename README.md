@@ -9,6 +9,7 @@ Small native macOS utility for converting a FLAC music library to MP3 with FFmpe
 - Converts ordinary FLAC files to a same-folder MP3 with the same basename.
 - Reads matching CUE sheets and creates separate tagged tracks named `01 - Artist - Title.mp3`.
 - Skips existing outputs one track at a time, so interrupted albums can be resumed safely.
+- Lets you enable or disable MusicBrainz/Cover Art Archive enrichment; local FLAC/CUE metadata and artwork are preserved when online enrichment is off.
 - Looks up missing metadata through MusicBrainz and downloads the release front cover from the Cover Art Archive.
 - Preserves local metadata/artwork as a fallback and embeds the selected artwork in the MP3 without creating extra image files.
 - Can optionally continue when metadata or cover art is unavailable; the missing item is logged and omitted from the MP3.
@@ -49,7 +50,9 @@ For each output that does not already exist, the app reads local FLAC/CUE tags a
 
 MusicBrainz requests use the contactable User-Agent `FLAC2MP3/1.0 (jose@cruset.com)` and are serialized with a minimum one-second interval. Cover images are fetched from the Cover Art Archive using the selected release's `front-500` endpoint. Artist, album, title, year, and identifier fields are sent to MusicBrainz; audio files are never uploaded.
 
-The conversion settings include **Continue when metadata or cover art is missing**. It is off by default, so a missing title/artist or cover still stops the run. Turn it on to log each missing item and convert the audio without that metadata and/or artwork. Other errors (for example, an unavailable MusicBrainz service, an ambiguous match, or an FFmpeg failure) still stop the run.
+The conversion settings include **Add metadata and cover art from MusicBrainz**, enabled by default. Turn it off for a local-only conversion: MusicBrainz, Cover Art Archive, and their wait interval are disabled, while local FLAC/CUE metadata and embedded or same-folder artwork are still copied. The dependent **Continue when metadata or cover art is missing** and **Wait between files** controls remain visible but disabled until online enrichment is enabled.
+
+When enrichment is enabled, **Continue when metadata or cover art is missing** is off by default, so a missing title/artist or cover still stops the run. Turn it on to log each missing item and convert the audio without that metadata and/or artwork. Other errors (for example, an unavailable MusicBrainz service, an ambiguous match, or an FFmpeg failure) still stop the run.
 
 ## Privacy
 

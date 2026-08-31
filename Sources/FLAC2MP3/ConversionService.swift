@@ -9,8 +9,10 @@ struct ConversionService {
         ignoreMissingEnrichment: Bool = false,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> ConversionSummary {
-        guard requestIntervalSeconds >= 1.0, requestIntervalSeconds <= 60.0 else {
-            throw FLAC2MP3Error.invalidRequestInterval(requestIntervalSeconds)
+        if enrichMetadata {
+            guard requestIntervalSeconds >= 1.0, requestIntervalSeconds <= 60.0 else {
+                throw FLAC2MP3Error.invalidRequestInterval(requestIntervalSeconds)
+            }
         }
         let ffmpeg = try await FFmpegLocator.locate()
         let runner = ProcessRunner()

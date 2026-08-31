@@ -26,26 +26,36 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .disabled(viewModel.isRunning)
-                    Toggle("Continue when metadata or cover art is missing", isOn: $viewModel.ignoreMissingEnrichment)
+                    Toggle("Add metadata and cover art from MusicBrainz", isOn: $viewModel.useMusicBrainz)
                         .disabled(viewModel.isRunning)
+                    Toggle("Continue when metadata or cover art is missing", isOn: $viewModel.ignoreMissingEnrichment)
+                        .disabled(viewModel.isRunning || !viewModel.useMusicBrainz)
                     HStack {
                         Text("Wait between files (seconds)")
                         TextField("1.0", text: $viewModel.requestIntervalText)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 90)
                             .multilineTextAlignment(.trailing)
-                            .disabled(viewModel.isRunning)
                         Text("(minimum 1.0, maximum 60.0)")
                             .foregroundStyle(.secondary)
                     }
-                    if !viewModel.requestIntervalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.requestIntervalSeconds == nil {
+                    .disabled(viewModel.isRunning || !viewModel.useMusicBrainz)
+                    if viewModel.useMusicBrainz &&
+                        !viewModel.requestIntervalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                        viewModel.requestIntervalSeconds == nil {
                         Text("Enter a decimal value from 1.0 to 60.0 seconds.")
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
-                    Text("MusicBrainz metadata and Cover Art Archive artwork are fetched for missing MP3s. The same interval is enforced between MusicBrainz requests. When the option above is enabled, unavailable metadata or cover art is logged and omitted while conversion continues.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if viewModel.useMusicBrainz {
+                        Text("MusicBrainz metadata and Cover Art Archive artwork are fetched for missing MP3s. The same interval is enforced between MusicBrainz requests. When the option above is enabled, unavailable metadata or cover art is logged and omitted while conversion continues.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("MusicBrainz enrichment is off. Conversion uses local FLAC/CUE metadata and embedded or same-folder artwork only.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(4)
             }

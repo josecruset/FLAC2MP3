@@ -7,6 +7,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
     @Published var folderPath: String = "/Volumes/MUSIK 2026"
     @Published var recursive = true
     @Published var quality: MP3Quality = .v0VBR
+    @Published var useMusicBrainz = true
     @Published var requestIntervalText = "1.0"
     @Published var ignoreMissingEnrichment = false
     @Published private(set) var isRunning = false
@@ -32,7 +33,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
     var canStart: Bool {
         !isRunning &&
             !folderPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            requestIntervalSeconds != nil
+            (!useMusicBrainz || requestIntervalSeconds != nil)
     }
 
     func browse() {
@@ -52,15 +53,25 @@ final class FLAC2MP3ViewModel: ObservableObject {
         guard canStart else { return }
         let path = (folderPath as NSString).expandingTildeInPath
         let rootURL = URL(fileURLWithPath: path).standardizedFileURL
-        guard let requestIntervalSeconds else {
-            errorMessage = FLAC2MP3Error.invalidRequestInterval(Double(requestIntervalText) ?? 0).localizedDescription
-            return
+        let interval: Double
+        if useMusicBrainz {
+            guard let requestIntervalSeconds else {
+                errorMessage = FLAC2MP3Error.invalidRequestInterval(Double(requestIntervalText) ?? 0).localizedDescription
+                return
+            }
+            interval = requestIntervalSeconds
+        } else {
+            // The interval is inactive without MusicBrainz. Keep a valid value in
+            // the immutable settings object for the worker, even if the disabled
+            // text field currently contains an invalid value.
+            interval = requestIntervalSeconds ?? 1.0
         }
         let settings = ConversionSettings(
             rootURL: rootURL,
             recursive: recursive,
             quality: quality,
-            requestIntervalSeconds: requestIntervalSeconds,
+            requestIntervalSeconds: interval,
+            useMusicBrainz: useMusicBrainz,
             ignoreMissingEnrichment: ignoreMissingEnrichment
         )
 
@@ -76,7 +87,12 @@ final class FLAC2MP3ViewModel: ObservableObject {
         skippedCount = 0
         logLines.removeAll(keepingCapacity: true)
         appendLog("Starting scan: \(rootURL.path)")
-        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue); wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s; ignore missing metadata/cover: \(settings.ignoreMissingEnrichment ? "yes" : "no")")
+        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue)")
+        if settings.useMusicBrainz {
+            appendLog("MusicBrainz metadata/cover: yes; wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s; ignore missing metadata/cover: \(settings.ignoreMissingEnrichment ? "yes" : "no")")
+        } else {
+            appendLog("MusicBrainz metadata/cover: no; using local metadata and artwork only.")
+        }
 
         let sink = EventSink { [weak self] event in
             Task { @MainActor in self?.handle(event) }
@@ -93,7 +109,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
                 plan: plan,
                 quality: settings.quality,
                 requestIntervalSeconds: settings.requestIntervalSeconds,
-                enrichMetadata: true,
+                enrichMetadata: settings.useMusicBrainz,
                 ignoreMissingEnrichment: settings.ignoreMissingEnrichment
             ) { event in
                 sink.send(event)

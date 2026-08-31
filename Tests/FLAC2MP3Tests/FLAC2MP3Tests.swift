@@ -22,6 +22,7 @@ struct FLAC2MP3TestRunner {
             try await testIgnoreMissingEnrichmentContinuesWithoutMetadataOrArtwork()
             try await testRateLimiterSpacesRequests()
             try await testInvalidRequestIntervalIsRejected()
+            try await testDisabledMusicBrainzIgnoresRequestInterval()
             try await testFFmpegConversionProducesMP3AndLeavesSourceUntouched()
             try await testConversionCanOmitSourceMetadata()
             try await testCueSplitConversionProducesTaggedTracks()
@@ -213,12 +214,28 @@ struct FLAC2MP3TestRunner {
                 plan: ConversionPlan(jobs: []),
                 quality: .v0VBR,
                 requestIntervalSeconds: 0.5,
-                enrichMetadata: false
+                enrichMetadata: true
             ) { _ in }
             throw TestFailure.failed("Expected invalid request interval to be rejected")
         } catch FLAC2MP3Error.invalidRequestInterval {
             return
         }
+    }
+
+    private static func testDisabledMusicBrainzIgnoresRequestInterval() async throws {
+        do {
+            _ = try await FFmpegLocator.locate()
+        } catch {
+            print("Skipping disabled MusicBrainz interval test: \(error)")
+            return
+        }
+        let summary = try await ConversionService().convert(
+            plan: ConversionPlan(jobs: []),
+            quality: .v0VBR,
+            requestIntervalSeconds: 0.5,
+            enrichMetadata: false
+        ) { _ in }
+        try require(summary.total == 0, "Disabled MusicBrainz conversion should accept an inactive interval")
     }
 
     private static func testAmbiguousMusicBrainzSearchStopsEnrichment() async throws {
@@ -312,6 +329,9 @@ struct FLAC2MP3TestRunner {
         try require(FileManager.default.fileExists(atPath: output.path), "MP3 output was not created")
         let convertedSize = try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber
         try require((convertedSize?.intValue ?? 0) > 0, "MP3 output is empty")
+        let convertedMetadata = try await FFprobeMetadataProbe().probe(url: output)
+        try require(convertedMetadata.metadata.artist == "Fixture Artist", "Local artist metadata was not preserved when online enrichment was disabled")
+        try require(convertedMetadata.metadata.title == "Fixture Title", "Local title metadata was not preserved when online enrichment was disabled")
         let finalSourceSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
         try require(finalSourceSize?.intValue == originalSize?.intValue, "Source FLAC was modified")
     }
