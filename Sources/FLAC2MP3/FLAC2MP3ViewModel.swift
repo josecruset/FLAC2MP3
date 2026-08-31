@@ -7,6 +7,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
     @Published var folderPath: String = "/Volumes/MUSIK 2026"
     @Published var recursive = true
     @Published var quality: MP3Quality = .v0VBR
+    @Published var requestIntervalText = "1.0"
     @Published private(set) var isRunning = false
     @Published private(set) var isScanning = false
     @Published private(set) var currentFile = ""
@@ -21,7 +22,17 @@ final class FLAC2MP3ViewModel: ObservableObject {
 
     private var worker: Task<ConversionSummary, Error>?
 
-    var canStart: Bool { !isRunning && !folderPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var requestIntervalSeconds: Double? {
+        let normalized = requestIntervalText.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value >= 1.0, value <= 60.0 else { return nil }
+        return value
+    }
+
+    var canStart: Bool {
+        !isRunning &&
+            !folderPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            requestIntervalSeconds != nil
+    }
 
     func browse() {
         let panel = NSOpenPanel()
@@ -40,7 +51,11 @@ final class FLAC2MP3ViewModel: ObservableObject {
         guard canStart else { return }
         let path = (folderPath as NSString).expandingTildeInPath
         let rootURL = URL(fileURLWithPath: path).standardizedFileURL
-        let settings = ConversionSettings(rootURL: rootURL, recursive: recursive, quality: quality)
+        guard let requestIntervalSeconds else {
+            errorMessage = FLAC2MP3Error.invalidRequestInterval(Double(requestIntervalText) ?? 0).localizedDescription
+            return
+        }
+        let settings = ConversionSettings(rootURL: rootURL, recursive: recursive, quality: quality, requestIntervalSeconds: requestIntervalSeconds)
 
         errorMessage = nil
         isRunning = true
@@ -54,7 +69,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
         skippedCount = 0
         logLines.removeAll(keepingCapacity: true)
         appendLog("Starting scan: \(rootURL.path)")
-        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue)")
+        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue); wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s")
 
         let sink = EventSink { [weak self] event in
             Task { @MainActor in self?.handle(event) }
@@ -67,7 +82,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
             }
             try Task.checkCancellation()
             let service = ConversionService()
-            return try await service.convert(plan: plan, quality: settings.quality) { event in
+            return try await service.convert(plan: plan, quality: settings.quality, requestIntervalSeconds: settings.requestIntervalSeconds, enrichMetadata: true) { event in
                 sink.send(event)
             }
         }
@@ -108,6 +123,15 @@ final class FLAC2MP3ViewModel: ObservableObject {
             totalJobs = total
             status = total == 0 ? "No FLAC files found" : "Ready to convert \(total) file(s)"
             appendLog("Queue contains \(total) output track(s); \(skipped) already exist and will be skipped.")
+        case let .waiting(seconds):
+            currentProgress = nil
+            status = "Waiting \(String(format: "%.2f", seconds)) s before next file…"
+            appendLog("Waiting \(String(format: "%.2f", seconds)) s before the next file.")
+        case let .metadataLookup(path):
+            currentFile = path
+            status = "Looking up MusicBrainz metadata…"
+        case let .artworkLookup(path):
+            status = "Downloading cover art for release \(path)…"
         case let .started(index, total, job):
             isScanning = false
             currentIndex = index

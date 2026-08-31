@@ -20,6 +20,7 @@ xcrun --sdk macosx swiftc \
     "$project_root/Sources/FLAC2MP3/LibraryScanner.swift" \
     "$project_root/Sources/FLAC2MP3/ProcessRunner.swift" \
     "$project_root/Sources/FLAC2MP3/ConversionService.swift" \
+    "$project_root/Sources/FLAC2MP3/MetadataService.swift" \
     "$project_root/Tests/FLAC2MP3Tests/FLAC2MP3Tests.swift" \
     -o "$build_directory/FLAC2MP3Tests"
 

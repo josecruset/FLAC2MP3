@@ -46,9 +46,23 @@ codesign --verify --deep --strict "$staged_app"
 mkdir -p "$output_directory"
 rm -rf -- "$app_bundle"
 ditto "$staged_app" "$app_bundle"
-xattr -cr "$app_bundle"
-codesign --force --sign - "$app_bundle"
-xattr -cr "$app_bundle"
-codesign --verify --deep --strict "$app_bundle"
+
+signed=false
+for attempt in 1 2 3 4 5; do
+    xattr -cr "$app_bundle"
+    if codesign --force --sign - "$app_bundle"; then
+        xattr -cr "$app_bundle"
+        if codesign --verify --deep --strict "$app_bundle"; then
+            signed=true
+            break
+        fi
+    fi
+    sleep 0.2
+done
+
+if [[ "$signed" != true ]]; then
+    echo "Could not produce a clean signed app bundle; Finder/FileProvider metadata kept returning." >&2
+    exit 1
+fi
 
 echo "$app_bundle"

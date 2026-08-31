@@ -4,10 +4,17 @@ struct ConversionService {
     func convert(
         plan: ConversionPlan,
         quality: MP3Quality,
-        onEvent: @escaping (ConversionEvent) -> Void
+        requestIntervalSeconds: Double = 1.0,
+        enrichMetadata: Bool = true,
+        onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> ConversionSummary {
+        guard requestIntervalSeconds >= 1.0, requestIntervalSeconds <= 60.0 else {
+            throw FLAC2MP3Error.invalidRequestInterval(requestIntervalSeconds)
+        }
         let ffmpeg = try await FFmpegLocator.locate()
         let runner = ProcessRunner()
+        let enricher = enrichMetadata ? MetadataEnricher(requestIntervalSeconds: requestIntervalSeconds) : nil
+        defer { enricher?.cleanup() }
         let total = plan.jobs.count
         let initialSkipped = plan.jobs.reduce(into: 0) { count, job in
             if FileManager.default.fileExists(atPath: job.outputURL.path) { count += 1 }
@@ -16,15 +23,29 @@ struct ConversionService {
 
         var converted = 0
         var skipped = 0
-        for (offset, job) in plan.jobs.enumerated() {
+        var processedMissingOutputs = 0
+        for (offset, originalJob) in plan.jobs.enumerated() {
             try Task.checkCancellation()
             let index = offset + 1
-            if FileManager.default.fileExists(atPath: job.outputURL.path) {
+            if FileManager.default.fileExists(atPath: originalJob.outputURL.path) {
                 skipped += 1
-                onEvent(.skipped(index: index, total: total, job: job))
+                onEvent(.skipped(index: index, total: total, job: originalJob))
                 continue
             }
 
+            if enrichMetadata && processedMissingOutputs > 0 {
+                onEvent(.waiting(seconds: requestIntervalSeconds))
+                try await Task.sleep(nanoseconds: UInt64(requestIntervalSeconds * 1_000_000_000))
+            }
+
+            let job: ConversionJob
+            if let enricher {
+                job = try await enricher.enrich(job: originalJob, onEvent: onEvent)
+            } else {
+                job = originalJob
+            }
+            try Task.checkCancellation()
+            processedMissingOutputs += 1
             onEvent(.started(index: index, total: total, job: job))
             let temporaryURL = temporaryOutputURL(for: job.outputURL)
             defer {
@@ -123,7 +144,18 @@ struct ConversionService {
             let value = metadata.trackTotal.map { "\(trackNumber)/\($0)" } ?? String(trackNumber)
             add("track", value)
         }
-        add("disc", metadata.discNumber)
+        if let discNumber = metadata.discNumber {
+            let value = metadata.discTotal.map { "\(discNumber)/\($0)" } ?? discNumber
+            add("disc", value)
+        }
+        add("isrc", metadata.isrc)
+        add("musicbrainz_recordingid", metadata.musicBrainzRecordingID)
+        add("musicbrainz_trackid", metadata.musicBrainzRecordingID)
+        add("musicbrainz_albumid", metadata.musicBrainzReleaseID)
+        add("musicbrainz_releaseid", metadata.musicBrainzReleaseID)
+        add("musicbrainz_releasegroupid", metadata.musicBrainzReleaseGroupID)
+        add("musicbrainz_artistid", metadata.musicBrainzArtistID)
+        add("musicbrainz_albumartistid", metadata.musicBrainzAlbumArtistID)
         return arguments
     }
 

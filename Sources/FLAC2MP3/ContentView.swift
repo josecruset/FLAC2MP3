@@ -26,7 +26,22 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .disabled(viewModel.isRunning)
-                    Text("V0 VBR is the recommended default from the conversion guide. CUE sheets are split into tagged tracks.")
+                    HStack {
+                        Text("Wait between files (seconds)")
+                        TextField("1.0", text: $viewModel.requestIntervalText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 90)
+                            .multilineTextAlignment(.trailing)
+                            .disabled(viewModel.isRunning)
+                        Text("(minimum 1.0, maximum 60.0)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if !viewModel.requestIntervalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && viewModel.requestIntervalSeconds == nil {
+                        Text("Enter a decimal value from 1.0 to 60.0 seconds.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    Text("MusicBrainz metadata and Cover Art Archive artwork are fetched for missing MP3s. The same interval is enforced between MusicBrainz requests.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

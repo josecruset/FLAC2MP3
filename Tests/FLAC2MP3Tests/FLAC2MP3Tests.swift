@@ -16,6 +16,11 @@ struct FLAC2MP3TestRunner {
             try testCueParserReadsMetadataAndFrameBoundaries()
             try testScannerSplitsMatchingCueAndConvertsUnmatchedFLACOneToOne()
             try testScannerRejectsAmbiguousCueSheets()
+            try await testMusicBrainzEnrichmentUsesMetadataAndArtwork()
+            try await testMusicBrainzSearchSelectsUniqueRelease()
+            try await testAmbiguousMusicBrainzSearchStopsEnrichment()
+            try await testRateLimiterSpacesRequests()
+            try await testInvalidRequestIntervalIsRejected()
             try await testFFmpegConversionProducesMP3AndLeavesSourceUntouched()
             try await testCueSplitConversionProducesTaggedTracks()
             print("FLAC2MP3 tests passed")
@@ -110,6 +115,136 @@ struct FLAC2MP3TestRunner {
         }
     }
 
+    private static func testMusicBrainzEnrichmentUsesMetadataAndArtwork() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("song.flac")
+        try Data().write(to: source)
+        let releaseID = "11111111-1111-4111-8111-111111111111"
+        let transport = RecordingHTTPTransport { request in
+            if request.url?.path.contains("/front-500") == true {
+                return HTTPResponse(statusCode: 200, headers: ["content-type": "image/jpeg"], data: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+            }
+            if request.url?.path.contains("/release/\(releaseID)") == true {
+                let json = #"{"id":"11111111-1111-4111-8111-111111111111","title":"Online Album","date":"1984-01-01","artist-credit":[{"name":"Online Artist","artist":{"id":"22222222-2222-4222-8222-222222222222","name":"Online Artist"}}],"release-group":{"id":"33333333-3333-4333-8333-333333333333"},"genres":[{"name":"Synth-pop"}],"media":[{"position":1,"track-count":1,"tracks":[{"number":"1","title":"Online Title","artist-credit":[{"name":"Online Artist","artist":{"id":"22222222-2222-4222-8222-222222222222"}}],"recording":{"id":"44444444-4444-4444-8444-444444444444","title":"Online Title","isrcs":["US-AAA-84-00001"]}}]}]}"#
+                return HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], data: Data(json.utf8))
+            }
+            throw TestFailure.failed("Unexpected MusicBrainz URL: \(request.url?.absoluteString ?? "nil")")
+        }
+        let probe = FixedMetadataProbe(snapshot: AudioMetadataSnapshot(
+            metadata: TrackMetadata(
+                artist: "Local Artist",
+                albumArtist: "Local Artist",
+                album: "Local Album",
+                title: "Local Title",
+                date: "1984",
+                trackNumber: 1,
+                trackTotal: 1,
+                musicBrainzReleaseID: releaseID
+            ),
+            durationSeconds: 2,
+            hasEmbeddedArtwork: false
+        ))
+        let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
+        let job = ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("song.mp3"))
+        let enriched = try await enricher.enrich(job: job) { _ in }
+        defer { enricher.cleanup() }
+        try require(enriched.metadata?.artist == "Online Artist", "MusicBrainz artist was not applied")
+        try require(enriched.metadata?.title == "Online Title", "MusicBrainz title was not applied")
+        try require(enriched.metadata?.genre == "Synth-pop", "MusicBrainz genre was not applied")
+        try require(enriched.metadata?.isrc == "US-AAA-84-00001", "MusicBrainz ISRC was not applied")
+        try require(enriched.coverURL != nil && FileManager.default.fileExists(atPath: enriched.coverURL!.path), "Cover artwork was not downloaded")
+        let requestCount = await transport.requestCount()
+        let userAgent = await transport.firstUserAgent()
+        try require(requestCount == 2, "Expected one release lookup and one artwork request")
+        try require(userAgent == MusicBrainzClient.userAgent, "MusicBrainz User-Agent is wrong")
+    }
+
+    private static func testRateLimiterSpacesRequests() async throws {
+        let limiter = MusicBrainzRateLimiter(intervalSeconds: 0.02)
+        let start = DispatchTime.now().uptimeNanoseconds
+        try await limiter.wait()
+        try await limiter.wait()
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
+        try require(elapsed >= 0.015, "Rate limiter did not space requests")
+    }
+
+    private static func testMusicBrainzSearchSelectsUniqueRelease() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("01 - Search Artist - Search Title.flac")
+        let localCover = directory.appendingPathComponent("cover.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: localCover)
+        let releaseID = "55555555-5555-4555-8555-555555555555"
+        let transport = RecordingHTTPTransport { request in
+            if request.url?.absoluteString.contains("/ws/2/release/?") == true {
+                let json = #"{"releases":[{"id":"55555555-5555-4555-8555-555555555555","title":"Search Album","score":100,"date":"1990-01-01","artist-credit":[{"name":"Search Artist"}],"media":[{"track-count":1}]}]}"#
+                return HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], data: Data(json.utf8))
+            }
+            if request.url?.path.contains("/front-500") == true {
+                return HTTPResponse(statusCode: 404, headers: [:], data: Data())
+            }
+            if request.url?.path.contains("/release/\(releaseID)") == true {
+                let json = #"{"id":"55555555-5555-4555-8555-555555555555","title":"Search Album","date":"1990-01-01","artist-credit":[{"name":"Search Artist"}],"media":[{"position":1,"track-count":1,"tracks":[{"number":"1","title":"Search Title","recording":{"id":"66666666-6666-4666-8666-666666666666","title":"Search Title"}}]}]}"#
+                return HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], data: Data(json.utf8))
+            }
+            throw TestFailure.failed("Unexpected MusicBrainz search URL: \(request.url?.absoluteString ?? "nil")")
+        }
+        let probe = FixedMetadataProbe(snapshot: AudioMetadataSnapshot(
+            metadata: TrackMetadata(artist: "Search Artist", albumArtist: "Search Artist", album: "Search Album", title: "Search Title", date: "1990", trackNumber: 1, trackTotal: 1),
+            durationSeconds: 1,
+            hasEmbeddedArtwork: false
+        ))
+        let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
+        let job = ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("search.mp3"), coverURL: localCover)
+        let enriched = try await enricher.enrich(job: job) { _ in }
+        defer { enricher.cleanup() }
+        try require(enriched.metadata?.musicBrainzReleaseID == releaseID, "Unique MusicBrainz search result was not applied")
+        try require(enriched.coverURL == localCover, "Local cover fallback was not used after a Cover Art Archive 404")
+        let searchURL = await transport.firstURL(containing: "/ws/2/release/")
+        try require(searchURL?.query?.contains("fmt=json") == true, "MusicBrainz search did not request JSON")
+    }
+
+    private static func testInvalidRequestIntervalIsRejected() async throws {
+        do {
+            _ = try await ConversionService().convert(
+                plan: ConversionPlan(jobs: []),
+                quality: .v0VBR,
+                requestIntervalSeconds: 0.5,
+                enrichMetadata: false
+            ) { _ in }
+            throw TestFailure.failed("Expected invalid request interval to be rejected")
+        } catch FLAC2MP3Error.invalidRequestInterval {
+            return
+        }
+    }
+
+    private static func testAmbiguousMusicBrainzSearchStopsEnrichment() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("ambiguous.flac")
+        let transport = RecordingHTTPTransport { request in
+            guard request.url?.absoluteString.contains("/ws/2/release/?") == true else {
+                throw TestFailure.failed("Ambiguous lookup should stop before release/artwork requests")
+            }
+            let json = #"{"releases":[{"id":"77777777-7777-4777-8777-777777777777","title":"Same Album","score":100,"date":"2000-01-01","artist-credit":[{"name":"Same Artist"}],"media":[{"track-count":1}]},{"id":"88888888-8888-4888-8888-888888888888","title":"Same Album","score":100,"date":"2000-01-01","artist-credit":[{"name":"Same Artist"}],"media":[{"track-count":1}]}]}"#
+            return HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], data: Data(json.utf8))
+        }
+        let probe = FixedMetadataProbe(snapshot: AudioMetadataSnapshot(
+            metadata: TrackMetadata(artist: "Same Artist", albumArtist: "Same Artist", album: "Same Album", title: "Same Title", trackNumber: 1, trackTotal: 1),
+            durationSeconds: 1,
+            hasEmbeddedArtwork: false
+        ))
+        let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
+        do {
+            _ = try await enricher.enrich(job: ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("ambiguous.mp3"))) { _ in }
+            throw TestFailure.failed("Expected ambiguous MusicBrainz results to stop enrichment")
+        } catch let FLAC2MP3Error.musicBrainzAmbiguous(_, candidates) {
+            try require(candidates.count == 2, "Ambiguous MusicBrainz candidates were not preserved")
+        }
+        enricher.cleanup()
+    }
+
     private static func testFFmpegConversionProducesMP3AndLeavesSourceUntouched() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -124,13 +259,22 @@ struct FLAC2MP3TestRunner {
         let generated = try await ProcessRunner().run(executable: ffmpeg, arguments: [
             "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-metadata", "artist=Fixture Artist",
+            "-metadata", "album=Fixture Album",
+            "-metadata", "title=Fixture Title",
+            "-metadata", "track=2/4",
             "-c:a", "flac", source.path
         ])
         try require(generated.status == 0, "Could not generate FLAC fixture: \(generated.standardError)")
+        let probed = try await FFprobeMetadataProbe().probe(url: source)
+        try require(probed.metadata.artist == "Fixture Artist", "ffprobe artist tag was not parsed")
+        try require(probed.metadata.album == "Fixture Album", "ffprobe album tag was not parsed")
+        try require(probed.metadata.title == "Fixture Title", "ffprobe title tag was not parsed")
+        try require(probed.metadata.trackNumber == 2 && probed.metadata.trackTotal == 4, "ffprobe track position was not parsed")
         let originalSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
 
         let plan = try LibraryScanner().scan(rootURL: directory, recursive: true)
-        let summary = try await ConversionService().convert(plan: plan, quality: .v0VBR) { _ in }
+        let summary = try await ConversionService().convert(plan: plan, quality: .v0VBR, enrichMetadata: false) { _ in }
         try require(summary.converted == 1 && summary.skipped == 0, "Unexpected conversion summary")
         let output = directory.appendingPathComponent("tone.mp3")
         try require(FileManager.default.fileExists(atPath: output.path), "MP3 output was not created")
@@ -172,7 +316,7 @@ struct FLAC2MP3TestRunner {
 
         let plan = try LibraryScanner().scan(rootURL: directory, recursive: true)
         try require(plan.jobs.count == 2, "Expected two jobs from the CUE fixture")
-        let summary = try await ConversionService().convert(plan: plan, quality: .cbr320) { _ in }
+        let summary = try await ConversionService().convert(plan: plan, quality: .cbr320, enrichMetadata: false) { _ in }
         try require(summary.converted == 2, "CUE tracks were not converted")
         try require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("01 - Cue Artist - First.mp3").path), "First CUE MP3 is missing")
         try require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("02 - Cue Artist - Second.mp3").path), "Second CUE MP3 is missing")
@@ -186,5 +330,39 @@ struct FLAC2MP3TestRunner {
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw TestFailure.failed(message) }
+    }
+}
+
+private final class FixedMetadataProbe: AudioMetadataProbing, @unchecked Sendable {
+    let snapshot: AudioMetadataSnapshot
+
+    init(snapshot: AudioMetadataSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func probe(url: URL) async throws -> AudioMetadataSnapshot {
+        snapshot
+    }
+}
+
+private actor RecordingHTTPTransport: HTTPTransport {
+    private var requests: [URLRequest] = []
+    private let handler: @Sendable (URLRequest) throws -> HTTPResponse
+
+    init(handler: @escaping @Sendable (URLRequest) throws -> HTTPResponse) {
+        self.handler = handler
+    }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        requests.append(request)
+        return try handler(request)
+    }
+
+    func requestCount() -> Int { requests.count }
+
+    func firstUserAgent() -> String? { requests.first?.value(forHTTPHeaderField: "User-Agent") }
+
+    func firstURL(containing fragment: String) -> URL? {
+        requests.compactMap(\.url).first { $0.absoluteString.contains(fragment) }
     }
 }

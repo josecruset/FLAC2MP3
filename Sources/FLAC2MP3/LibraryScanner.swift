@@ -7,6 +7,7 @@ struct LibraryScanner {
     }
 
     func scan(rootURL: URL, recursive: Bool, onProgress: ((String, Int) -> Void)? = nil) throws -> ConversionPlan {
+        try Task.checkCancellation()
         let rootValues: URLResourceValues
         do {
             rootValues = try rootURL.resourceValues(forKeys: [.isDirectoryKey])
@@ -26,6 +27,7 @@ struct LibraryScanner {
 
         var candidatesByFLAC: [String: [CueCandidate]] = [:]
         for cue in cues {
+            try Task.checkCancellation()
             let document = try CueParser.parse(url: cue)
             for referencedURL in document.referencedFLACURLs {
                 let key = pathKey(referencedURL)
@@ -39,6 +41,7 @@ struct LibraryScanner {
         var jobs: [ConversionJob] = []
         var consumedFLACs = Set<String>()
         for flac in flacs {
+            try Task.checkCancellation()
             let key = pathKey(flac)
             let candidates = candidatesByFLAC[key] ?? []
             if let candidate = try chooseCandidate(for: flac, candidates: candidates) {
@@ -61,6 +64,7 @@ struct LibraryScanner {
         }
 
         for flac in flacs where !consumedFLACs.contains(pathKey(flac)) {
+            try Task.checkCancellation()
             let outputURL = flac.deletingPathExtension().appendingPathExtension("mp3")
             jobs.append(ConversionJob(sourceURL: flac, outputURL: outputURL, coverURL: findCover(in: flac.deletingLastPathComponent())))
         }
@@ -76,6 +80,7 @@ struct LibraryScanner {
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .nameKey]
 
         func accept(_ url: URL) throws {
+            try Task.checkCancellation()
             let values: URLResourceValues
             do {
                 values = try url.resourceValues(forKeys: keys)
@@ -103,6 +108,7 @@ struct LibraryScanner {
                 throw FLAC2MP3Error.unableToRead(rootURL, "The folder could not be enumerated.")
             }
             for case let url as URL in enumerator {
+                try Task.checkCancellation()
                 let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if values.isSymbolicLink == true {
                     enumerator.skipDescendants()
@@ -121,7 +127,10 @@ struct LibraryScanner {
             } catch {
                 throw FLAC2MP3Error.unableToRead(rootURL, error.localizedDescription)
             }
-            for child in children { try accept(child) }
+            for child in children {
+                try Task.checkCancellation()
+                try accept(child)
+            }
         }
         return result
     }
