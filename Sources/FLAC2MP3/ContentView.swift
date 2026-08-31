@@ -26,6 +26,8 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .disabled(viewModel.isRunning)
+                    Toggle("Continue when metadata or cover art is missing", isOn: $viewModel.ignoreMissingEnrichment)
+                        .disabled(viewModel.isRunning)
                     HStack {
                         Text("Wait between files (seconds)")
                         TextField("1.0", text: $viewModel.requestIntervalText)
@@ -41,7 +43,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
-                    Text("MusicBrainz metadata and Cover Art Archive artwork are fetched for missing MP3s. The same interval is enforced between MusicBrainz requests.")
+                    Text("MusicBrainz metadata and Cover Art Archive artwork are fetched for missing MP3s. The same interval is enforced between MusicBrainz requests. When the option above is enabled, unavailable metadata or cover art is logged and omitted while conversion continues.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

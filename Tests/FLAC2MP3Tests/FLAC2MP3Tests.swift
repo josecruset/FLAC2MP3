@@ -19,9 +19,11 @@ struct FLAC2MP3TestRunner {
             try await testMusicBrainzEnrichmentUsesMetadataAndArtwork()
             try await testMusicBrainzSearchSelectsUniqueRelease()
             try await testAmbiguousMusicBrainzSearchStopsEnrichment()
+            try await testIgnoreMissingEnrichmentContinuesWithoutMetadataOrArtwork()
             try await testRateLimiterSpacesRequests()
             try await testInvalidRequestIntervalIsRejected()
             try await testFFmpegConversionProducesMP3AndLeavesSourceUntouched()
+            try await testConversionCanOmitSourceMetadata()
             try await testCueSplitConversionProducesTaggedTracks()
             print("FLAC2MP3 tests passed")
         } catch {
@@ -245,6 +247,36 @@ struct FLAC2MP3TestRunner {
         enricher.cleanup()
     }
 
+    private static func testIgnoreMissingEnrichmentContinuesWithoutMetadataOrArtwork() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("unknown.flac")
+        try Data().write(to: source)
+        let transport = RecordingHTTPTransport { _ in
+            HTTPResponse(statusCode: 200, headers: ["content-type": "application/json"], data: Data(#"{}"#.utf8))
+        }
+        let probe = FixedMetadataProbe(snapshot: AudioMetadataSnapshot(
+            metadata: TrackMetadata(),
+            durationSeconds: 1,
+            hasEmbeddedArtwork: false
+        ))
+        let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
+        let events = EventRecorder()
+        let enriched = try await enricher.enrich(
+            job: ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("unknown.mp3")),
+            onEvent: { event in events.record(event) },
+            ignoreMissingEnrichment: true
+        )
+        enricher.cleanup()
+
+        try require(enriched.metadata == nil, "Missing metadata should be omitted when ignore is enabled")
+        try require(enriched.coverURL == nil, "Missing artwork should remain absent when ignore is enabled")
+        try require(!enriched.copySourceMetadata, "Source metadata should not be copied when metadata is missing")
+        let messages = events.logMessages
+        try require(messages.contains { $0.contains("Missing metadata") }, "Missing metadata was not logged")
+        try require(messages.contains { $0.contains("Missing cover artwork") }, "Missing cover artwork was not logged")
+    }
+
     private static func testFFmpegConversionProducesMP3AndLeavesSourceUntouched() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -282,6 +314,49 @@ struct FLAC2MP3TestRunner {
         try require((convertedSize?.intValue ?? 0) > 0, "MP3 output is empty")
         let finalSourceSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
         try require(finalSourceSize?.intValue == originalSize?.intValue, "Source FLAC was modified")
+    }
+
+    private static func testConversionCanOmitSourceMetadata() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ffmpeg: URL
+        let ffprobe: URL
+        do {
+            ffmpeg = try await FFmpegLocator.locate()
+            ffprobe = try await FFprobeLocator.locate()
+        } catch {
+            print("Skipping metadata omission integration test: \(error)")
+            return
+        }
+        let source = directory.appendingPathComponent("tagged.flac")
+        let generated = try await ProcessRunner().run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+            "-metadata", "artist=Tagged Artist",
+            "-metadata", "title=Tagged Title",
+            "-c:a", "flac", source.path
+        ])
+        try require(generated.status == 0, "Could not generate metadata omission fixture: \(generated.standardError)")
+
+        let output = directory.appendingPathComponent("tagged.mp3")
+        let plan = ConversionPlan(jobs: [ConversionJob(
+            sourceURL: source,
+            outputURL: output,
+            copySourceMetadata: false
+        )])
+        let summary = try await ConversionService().convert(plan: plan, quality: .v0VBR, enrichMetadata: false) { _ in }
+        try require(summary.converted == 1, "Metadata omission fixture was not converted")
+
+        let probed = try await ProcessRunner().run(executable: ffprobe, arguments: [
+            "-hide_banner", "-loglevel", "error",
+            "-show_entries", "format_tags=artist,title",
+            "-of", "json", output.path
+        ])
+        try require(probed.status == 0, "Could not inspect metadata omission output: \(probed.standardError)")
+        let object = try JSONSerialization.jsonObject(with: Data(probed.standardOutput.utf8)) as? [String: Any]
+        let format = object?["format"] as? [String: Any]
+        let tags = format?["tags"] as? [String: Any] ?? [:]
+        try require(tags["artist"] == nil && tags["title"] == nil, "Source artist/title tags were copied despite the omission setting")
     }
 
     private static func testCueSplitConversionProducesTaggedTracks() async throws {
@@ -342,6 +417,24 @@ private final class FixedMetadataProbe: AudioMetadataProbing, @unchecked Sendabl
 
     func probe(url: URL) async throws -> AudioMetadataSnapshot {
         snapshot
+    }
+}
+
+private final class EventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [String] = []
+
+    func record(_ event: ConversionEvent) {
+        guard case let .log(message) = event else { return }
+        lock.lock()
+        messages.append(message)
+        lock.unlock()
+    }
+
+    var logMessages: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return messages
     }
 }
 

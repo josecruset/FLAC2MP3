@@ -11,6 +11,7 @@ Small native macOS utility for converting a FLAC music library to MP3 with FFmpe
 - Skips existing outputs one track at a time, so interrupted albums can be resumed safely.
 - Looks up missing metadata through MusicBrainz and downloads the release front cover from the Cover Art Archive.
 - Preserves local metadata/artwork as a fallback and embeds the selected artwork in the MP3 without creating extra image files.
+- Can optionally continue when metadata or cover art is unavailable; the missing item is logged and omitted from the MP3.
 - Enforces the MusicBrainz rate limit and lets you choose the wait between files (1.0–60.0 seconds).
 - Runs one FFmpeg process at a time, with live progress, a Cancel button, and a visible log.
 - Stops on the first scan or conversion error and never changes the original FLAC/CUE files.
@@ -47,6 +48,8 @@ The default encoder is LAME V0 VBR, with 320 kbps CBR available in the quality s
 For each output that does not already exist, the app reads local FLAC/CUE tags and searches MusicBrainz for a uniquely high-confidence release. Embedded MusicBrainz release or recording IDs are preferred. Ambiguous results stop the run and list candidate releases so the local tags can be corrected. If no result is found, local metadata and artwork are used when they provide at least a title, artist, and cover.
 
 MusicBrainz requests use the contactable User-Agent `FLAC2MP3/1.0 (jose@cruset.com)` and are serialized with a minimum one-second interval. Cover images are fetched from the Cover Art Archive using the selected release's `front-500` endpoint. Artist, album, title, year, and identifier fields are sent to MusicBrainz; audio files are never uploaded.
+
+The conversion settings include **Continue when metadata or cover art is missing**. It is off by default, so a missing title/artist or cover still stops the run. Turn it on to log each missing item and convert the audio without that metadata and/or artwork. Other errors (for example, an unavailable MusicBrainz service, an ambiguous match, or an FFmpeg failure) still stop the run.
 
 ## Privacy
 

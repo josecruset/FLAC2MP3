@@ -6,6 +6,7 @@ struct ConversionService {
         quality: MP3Quality,
         requestIntervalSeconds: Double = 1.0,
         enrichMetadata: Bool = true,
+        ignoreMissingEnrichment: Bool = false,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> ConversionSummary {
         guard requestIntervalSeconds >= 1.0, requestIntervalSeconds <= 60.0 else {
@@ -40,7 +41,11 @@ struct ConversionService {
 
             let job: ConversionJob
             if let enricher {
-                job = try await enricher.enrich(job: originalJob, onEvent: onEvent)
+                job = try await enricher.enrich(
+                    job: originalJob,
+                    onEvent: onEvent,
+                    ignoreMissingEnrichment: ignoreMissingEnrichment
+                )
             } else {
                 job = originalJob
             }
@@ -106,7 +111,8 @@ struct ConversionService {
             arguments += ["-t", formatSeconds(end - start)]
         }
 
-        arguments += ["-map", "0:a:0", "-map_metadata", "0"]
+        arguments += ["-map", "0:a:0"]
+        arguments += job.copySourceMetadata ? ["-map_metadata", "0"] : ["-map_metadata", "-1"]
         if job.coverURL != nil {
             arguments += ["-map", "1:v:0", "-c:v", "mjpeg", "-disposition:v", "attached_pic", "-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)"]
         } else {

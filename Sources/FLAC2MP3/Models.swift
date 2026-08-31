@@ -12,6 +12,7 @@ struct ConversionSettings: Sendable {
     let recursive: Bool
     let quality: MP3Quality
     let requestIntervalSeconds: Double
+    let ignoreMissingEnrichment: Bool
 }
 
 struct TrackMetadata: Equatable, Sendable {
@@ -98,6 +99,9 @@ struct ConversionJob: Identifiable, Sendable {
     let startSeconds: Double?
     let endSeconds: Double?
     let coverURL: URL?
+    /// Whether FFmpeg should copy tags from the source when no explicit metadata is available.
+    /// This is disabled for jobs where the user opted to continue without metadata.
+    let copySourceMetadata: Bool
 
     init(
         id: UUID = UUID(),
@@ -106,7 +110,8 @@ struct ConversionJob: Identifiable, Sendable {
         metadata: TrackMetadata? = nil,
         startSeconds: Double? = nil,
         endSeconds: Double? = nil,
-        coverURL: URL? = nil
+        coverURL: URL? = nil,
+        copySourceMetadata: Bool = true
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -115,6 +120,7 @@ struct ConversionJob: Identifiable, Sendable {
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
         self.coverURL = coverURL
+        self.copySourceMetadata = copySourceMetadata
     }
 
     var isSegment: Bool {

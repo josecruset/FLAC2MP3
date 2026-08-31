@@ -615,7 +615,11 @@ final class MetadataEnricher: @unchecked Sendable {
         client = MusicBrainzClient(intervalSeconds: requestIntervalSeconds, transport: transport)
     }
 
-    func enrich(job: ConversionJob, onEvent: @escaping @Sendable (ConversionEvent) -> Void) async throws -> ConversionJob {
+    func enrich(
+        job: ConversionJob,
+        onEvent: @escaping @Sendable (ConversionEvent) -> Void,
+        ignoreMissingEnrichment: Bool = false
+    ) async throws -> ConversionJob {
         let sourceKey = job.sourceURL.standardizedFileURL.path.lowercased()
         let snapshot: AudioMetadataSnapshot
         if let cached = probeCache[sourceKey] {
@@ -664,20 +668,31 @@ final class MetadataEnricher: @unchecked Sendable {
             break
         }
 
-        guard nonEmpty(metadata.title), nonEmpty(metadata.artist) else {
-            throw FLAC2MP3Error.missingMetadata(job.sourceURL)
+        let metadataAvailable = nonEmpty(metadata.title) && nonEmpty(metadata.artist)
+        if !metadataAvailable {
+            guard ignoreMissingEnrichment else {
+                throw FLAC2MP3Error.missingMetadata(job.sourceURL)
+            }
+            onEvent(.log("Missing metadata for \(job.sourceURL.lastPathComponent); continuing without metadata."))
         }
-        guard coverURL != nil || snapshot.hasEmbeddedArtwork else {
-            throw FLAC2MP3Error.missingArtwork(job.sourceURL)
+
+        let artworkAvailable = coverURL != nil || snapshot.hasEmbeddedArtwork
+        if !artworkAvailable {
+            guard ignoreMissingEnrichment else {
+                throw FLAC2MP3Error.missingArtwork(job.sourceURL)
+            }
+            onEvent(.log("Missing cover artwork for \(job.sourceURL.lastPathComponent); continuing without cover art."))
         }
+
         return ConversionJob(
             id: job.id,
             sourceURL: job.sourceURL,
             outputURL: job.outputURL,
-            metadata: metadata,
+            metadata: metadataAvailable ? metadata : nil,
             startSeconds: job.startSeconds,
             endSeconds: job.endSeconds,
-            coverURL: coverURL
+            coverURL: coverURL,
+            copySourceMetadata: metadataAvailable
         )
     }
 

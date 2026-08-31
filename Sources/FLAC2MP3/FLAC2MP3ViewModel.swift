@@ -8,6 +8,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
     @Published var recursive = true
     @Published var quality: MP3Quality = .v0VBR
     @Published var requestIntervalText = "1.0"
+    @Published var ignoreMissingEnrichment = false
     @Published private(set) var isRunning = false
     @Published private(set) var isScanning = false
     @Published private(set) var currentFile = ""
@@ -55,7 +56,13 @@ final class FLAC2MP3ViewModel: ObservableObject {
             errorMessage = FLAC2MP3Error.invalidRequestInterval(Double(requestIntervalText) ?? 0).localizedDescription
             return
         }
-        let settings = ConversionSettings(rootURL: rootURL, recursive: recursive, quality: quality, requestIntervalSeconds: requestIntervalSeconds)
+        let settings = ConversionSettings(
+            rootURL: rootURL,
+            recursive: recursive,
+            quality: quality,
+            requestIntervalSeconds: requestIntervalSeconds,
+            ignoreMissingEnrichment: ignoreMissingEnrichment
+        )
 
         errorMessage = nil
         isRunning = true
@@ -69,7 +76,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
         skippedCount = 0
         logLines.removeAll(keepingCapacity: true)
         appendLog("Starting scan: \(rootURL.path)")
-        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue); wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s")
+        appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue); wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s; ignore missing metadata/cover: \(settings.ignoreMissingEnrichment ? "yes" : "no")")
 
         let sink = EventSink { [weak self] event in
             Task { @MainActor in self?.handle(event) }
@@ -82,7 +89,13 @@ final class FLAC2MP3ViewModel: ObservableObject {
             }
             try Task.checkCancellation()
             let service = ConversionService()
-            return try await service.convert(plan: plan, quality: settings.quality, requestIntervalSeconds: settings.requestIntervalSeconds, enrichMetadata: true) { event in
+            return try await service.convert(
+                plan: plan,
+                quality: settings.quality,
+                requestIntervalSeconds: settings.requestIntervalSeconds,
+                enrichMetadata: true,
+                ignoreMissingEnrichment: settings.ignoreMissingEnrichment
+            ) { event in
                 sink.send(event)
             }
         }
