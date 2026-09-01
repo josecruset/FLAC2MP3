@@ -8,6 +8,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
     @Published var recursive = true
     @Published var quality: MP3Quality = .v0VBR
     @Published var useMusicBrainz = true
+    @Published var useCoverJPG = false
     @Published var requestIntervalText = "1.0"
     @Published var ignoreMissingEnrichment = false
     @Published private(set) var isRunning = false
@@ -72,6 +73,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
             quality: quality,
             requestIntervalSeconds: interval,
             useMusicBrainz: useMusicBrainz,
+            useCoverJPG: useCoverJPG,
             ignoreMissingEnrichment: ignoreMissingEnrichment
         )
 
@@ -88,6 +90,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
         logLines.removeAll(keepingCapacity: true)
         appendLog("Starting scan: \(rootURL.path)")
         appendLog("Recursive: \(settings.recursive ? "yes" : "no"); quality: \(settings.quality.rawValue)")
+        appendLog("Use same-directory cover.jpg: \(settings.useCoverJPG ? "yes" : "no")")
         if settings.useMusicBrainz {
             appendLog("MusicBrainz metadata/cover: yes; wait: \(String(format: "%.2f", settings.requestIntervalSeconds)) s; ignore missing metadata/cover: \(settings.ignoreMissingEnrichment ? "yes" : "no")")
         } else {
@@ -99,7 +102,11 @@ final class FLAC2MP3ViewModel: ObservableObject {
         }
         let task = Task.detached(priority: .userInitiated) {
             let scanner = LibraryScanner()
-            let plan = try scanner.scan(rootURL: settings.rootURL, recursive: settings.recursive) { path, discovered in
+            let plan = try scanner.scan(
+                rootURL: settings.rootURL,
+                recursive: settings.recursive,
+                useCoverJPG: settings.useCoverJPG
+            ) { path, discovered in
                 if Task.isCancelled { return }
                 sink.send(.scanning(path: path, discovered: discovered))
             }
@@ -110,6 +117,7 @@ final class FLAC2MP3ViewModel: ObservableObject {
                 quality: settings.quality,
                 requestIntervalSeconds: settings.requestIntervalSeconds,
                 enrichMetadata: settings.useMusicBrainz,
+                useCoverJPG: settings.useCoverJPG,
                 ignoreMissingEnrichment: settings.ignoreMissingEnrichment
             ) { event in
                 sink.send(event)

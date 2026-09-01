@@ -665,6 +665,7 @@ final class MetadataEnricher: @unchecked Sendable {
     func enrich(
         job: ConversionJob,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void,
+        useCoverJPG: Bool = false,
         ignoreMissingEnrichment: Bool = false
     ) async throws -> ConversionJob {
         let sourceKey = job.sourceURL.standardizedFileURL.path.lowercased()
@@ -704,12 +705,16 @@ final class MetadataEnricher: @unchecked Sendable {
             if let onlineMetadata = details.metadata(for: local) {
                 metadata = onlineMetadata.merged(over: local)
                 onEvent(.log("Using MusicBrainz release \(details.id) for \(job.sourceURL.lastPathComponent)."))
-                onEvent(.artworkLookup(path: details.id))
-                if let artwork = try await client.artwork(for: details.id, releaseGroupID: details.releaseGroupID) {
-                    coverURL = artwork
-                    onEvent(.log("Using Cover Art Archive front artwork for release \(details.id)."))
+                if useCoverJPG, coverURL != nil {
+                    onEvent(.log("Using local cover.jpg for \(job.sourceURL.lastPathComponent); skipping Cover Art Archive lookup."))
                 } else {
-                    onEvent(.log("No Cover Art Archive front image for release \(details.id); using local artwork if available."))
+                    onEvent(.artworkLookup(path: details.id))
+                    if let artwork = try await client.artwork(for: details.id, releaseGroupID: details.releaseGroupID) {
+                        coverURL = artwork
+                        onEvent(.log("Using Cover Art Archive front artwork for release \(details.id)."))
+                    } else {
+                        onEvent(.log("No Cover Art Archive front image for release \(details.id); using local artwork if available."))
+                    }
                 }
             } else {
                 onEvent(.log("MusicBrainz release \(details.id) did not contain a matching track; using local metadata/artwork."))

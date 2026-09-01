@@ -6,7 +6,12 @@ struct LibraryScanner {
         let document: CueDocument
     }
 
-    func scan(rootURL: URL, recursive: Bool, onProgress: ((String, Int) -> Void)? = nil) throws -> ConversionPlan {
+    func scan(
+        rootURL: URL,
+        recursive: Bool,
+        useCoverJPG: Bool = false,
+        onProgress: ((String, Int) -> Void)? = nil
+    ) throws -> ConversionPlan {
         try Task.checkCancellation()
         let rootValues: URLResourceValues
         do {
@@ -45,7 +50,7 @@ struct LibraryScanner {
             let key = pathKey(flac)
             let candidates = candidatesByFLAC[key] ?? []
             if let candidate = try chooseCandidate(for: flac, candidates: candidates) {
-                let cover = findCover(in: flac.deletingLastPathComponent())
+                let cover = findCover(in: flac.deletingLastPathComponent(), useCoverJPG: useCoverJPG)
                 let tracks = candidate.document.tracks.filter { pathKey($0.sourceURL) == key }
                 for track in tracks {
                     let outputName = trackFilename(track: track, albumArtist: candidate.document.albumMetadata.artist)
@@ -66,7 +71,11 @@ struct LibraryScanner {
         for flac in flacs where !consumedFLACs.contains(pathKey(flac)) {
             try Task.checkCancellation()
             let outputURL = flac.deletingPathExtension().appendingPathExtension("mp3")
-            jobs.append(ConversionJob(sourceURL: flac, outputURL: outputURL, coverURL: findCover(in: flac.deletingLastPathComponent())))
+            jobs.append(ConversionJob(
+                sourceURL: flac,
+                outputURL: outputURL,
+                coverURL: findCover(in: flac.deletingLastPathComponent(), useCoverJPG: useCoverJPG)
+            ))
         }
 
         try validateOutputConflicts(jobs)
@@ -145,9 +154,9 @@ struct LibraryScanner {
         throw FLAC2MP3Error.ambiguousCue(flac, candidates.map(\.cueURL))
     }
 
-    private func findCover(in directory: URL) -> URL? {
-        let names = Set(["cover", "folder", "front"])
-        let extensions = Set(["jpg", "jpeg", "png"])
+    private func findCover(in directory: URL, useCoverJPG: Bool) -> URL? {
+        let names = useCoverJPG ? Set(["cover"]) : Set(["cover", "folder", "front"])
+        let extensions = useCoverJPG ? Set(["jpg"]) : Set(["jpg", "jpeg", "png"])
         guard let children = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],

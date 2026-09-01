@@ -28,6 +28,8 @@ struct ContentView: View {
                     .disabled(viewModel.isRunning)
                     Toggle("Add metadata and cover art from MusicBrainz", isOn: $viewModel.useMusicBrainz)
                         .disabled(viewModel.isRunning)
+                    Toggle("Use cover.jpg in the same directory for cover art", isOn: $viewModel.useCoverJPG)
+                        .disabled(viewModel.isRunning)
                     Toggle("Continue when metadata or cover art is missing", isOn: $viewModel.ignoreMissingEnrichment)
                         .disabled(viewModel.isRunning || !viewModel.useMusicBrainz)
                     HStack {
@@ -56,6 +58,9 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Text("When cover.jpg is enabled, an existing same-directory cover.jpg is used and the Cover Art Archive artwork request is skipped. If it is missing, online artwork lookup is used when MusicBrainz enrichment is enabled.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(4)
             }

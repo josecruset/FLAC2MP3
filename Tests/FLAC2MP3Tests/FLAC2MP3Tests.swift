@@ -15,6 +15,7 @@ struct FLAC2MP3TestRunner {
         do {
             try testCueParserReadsMetadataAndFrameBoundaries()
             try testScannerSplitsMatchingCueAndConvertsUnmatchedFLACOneToOne()
+            try testScannerUsesCoverJPGPreference()
             try testScannerRejectsAmbiguousCueSheets()
             try await testMusicBrainzEnrichmentUsesMetadataAndArtwork()
             try await testMusicBrainzSearchSelectsUniqueRelease()
@@ -119,6 +120,26 @@ struct FLAC2MP3TestRunner {
         }
     }
 
+    private static func testScannerUsesCoverJPGPreference() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("song.flac")
+        try Data().write(to: source)
+        let folderCover = directory.appendingPathComponent("folder.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: folderCover)
+
+        let legacyPlan = try LibraryScanner().scan(rootURL: directory, recursive: false)
+        try require(legacyPlan.jobs.first?.coverURL?.resolvingSymlinksInPath() == folderCover.resolvingSymlinksInPath(), "The existing fallback cover search should still use folder.jpg")
+
+        let preferredWithoutCover = try LibraryScanner().scan(rootURL: directory, recursive: false, useCoverJPG: true)
+        try require(preferredWithoutCover.jobs.first?.coverURL == nil, "Cover.jpg preference should not use folder.jpg as a substitute")
+
+        let cover = directory.appendingPathComponent("cover.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: cover)
+        let preferredPlan = try LibraryScanner().scan(rootURL: directory, recursive: false, useCoverJPG: true)
+        try require(preferredPlan.jobs.first?.coverURL?.resolvingSymlinksInPath() == cover.resolvingSymlinksInPath(), "Cover.jpg preference did not select the same-directory cover.jpg")
+    }
+
     private static func testMusicBrainzEnrichmentUsesMetadataAndArtwork() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -151,7 +172,7 @@ struct FLAC2MP3TestRunner {
         ))
         let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
         let job = ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("song.mp3"))
-        let enriched = try await enricher.enrich(job: job) { _ in }
+        let enriched = try await enricher.enrich(job: job, onEvent: { _ in }, useCoverJPG: true)
         defer { enricher.cleanup() }
         try require(enriched.metadata?.artist == "Online Artist", "MusicBrainz artist was not applied")
         try require(enriched.metadata?.title == "Online Title", "MusicBrainz title was not applied")
@@ -216,13 +237,17 @@ struct FLAC2MP3TestRunner {
         let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
         let job = ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("search.mp3"), coverURL: localCover)
         let events = EventRecorder()
-        let enriched = try await enricher.enrich(job: job) { event in events.record(event) }
+        let enriched = try await enricher.enrich(job: job, onEvent: { event in events.record(event) }, useCoverJPG: true)
         defer { enricher.cleanup() }
         try require(enriched.metadata?.musicBrainzReleaseID == releaseID, "Unique MusicBrainz search result was not applied")
         try require(enriched.coverURL == localCover, "Local cover fallback was not used after a Cover Art Archive 404")
         let searchURL = await transport.firstURL(containing: "/ws/2/release/")
         try require(searchURL?.query?.contains("fmt=json") == true, "MusicBrainz search did not request JSON")
         try require(events.waitingSeconds.count == 1, "Expected one wait between MusicBrainz search and release requests")
+        let requestCount = await transport.requestCount()
+        let artworkURL = await transport.firstURL(containing: "/front-500")
+        try require(requestCount == 2, "Cover Art Archive should be skipped when cover.jpg is present")
+        try require(artworkURL == nil, "A Cover Art Archive request was made despite the local cover.jpg")
     }
 
     private static func testInvalidRequestIntervalIsRejected() async throws {

@@ -6,6 +6,7 @@ struct ConversionService {
         quality: MP3Quality,
         requestIntervalSeconds: Double = 1.0,
         enrichMetadata: Bool = true,
+        useCoverJPG: Bool = false,
         ignoreMissingEnrichment: Bool = false,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> ConversionSummary {
@@ -40,6 +41,7 @@ struct ConversionService {
                 job = try await enricher.enrich(
                     job: originalJob,
                     onEvent: onEvent,
+                    useCoverJPG: useCoverJPG,
                     ignoreMissingEnrichment: ignoreMissingEnrichment
                 )
             } else {

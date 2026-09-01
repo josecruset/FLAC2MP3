@@ -13,6 +13,7 @@ struct ConversionSettings: Sendable {
     let quality: MP3Quality
     let requestIntervalSeconds: Double
     let useMusicBrainz: Bool
+    let useCoverJPG: Bool
     let ignoreMissingEnrichment: Bool
 }
 
