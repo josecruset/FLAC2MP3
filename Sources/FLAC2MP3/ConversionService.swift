@@ -97,12 +97,15 @@ struct ConversionService {
     }
 
     private func makeArguments(job: ConversionJob, quality: MP3Quality, temporaryURL: URL) -> [String] {
-        var arguments = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", job.sourceURL.path]
+        var arguments = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if let start = job.startSeconds, start > 0 {
+            // Seek only the audio input. An output-side seek would discard the
+            // cover image's single frame for every CUE track after the first.
+            arguments += ["-ss", formatSeconds(start)]
+        }
+        arguments += ["-i", job.sourceURL.path]
         if let coverURL = job.coverURL {
             arguments += ["-i", coverURL.path]
-        }
-        if let start = job.startSeconds, start > 0 {
-            arguments += ["-ss", formatSeconds(start)]
         }
         if let start = job.startSeconds, let end = job.endSeconds, end > start {
             arguments += ["-t", formatSeconds(end - start)]

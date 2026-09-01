@@ -438,6 +438,13 @@ struct FLAC2MP3TestRunner {
             "-c:a", "flac", source.path
         ])
         try require(generated.status == 0, "Could not generate CUE FLAC fixture: \(generated.standardError)")
+        let cover = directory.appendingPathComponent("cover.jpg")
+        let generatedCover = try await ProcessRunner().run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-f", "lavfi", "-i", "color=c=red:s=32x32",
+            "-frames:v", "1", cover.path
+        ])
+        try require(generatedCover.status == 0, "Could not generate CUE cover fixture: \(generatedCover.standardError)")
         let cueText = #"""
         PERFORMER "Cue Artist"
         TITLE "Cue Album"
@@ -451,12 +458,21 @@ struct FLAC2MP3TestRunner {
         """#
         try Data(cueText.utf8).write(to: directory.appendingPathComponent("disc.cue"))
 
-        let plan = try LibraryScanner().scan(rootURL: directory, recursive: true)
+        let plan = try LibraryScanner().scan(rootURL: directory, recursive: true, useCoverJPG: true)
         try require(plan.jobs.count == 2, "Expected two jobs from the CUE fixture")
+        try require(plan.jobs.allSatisfy { $0.coverURL != nil }, "Every CUE job should use the directory cover.jpg")
         let summary = try await ConversionService().convert(plan: plan, quality: .cbr320, enrichMetadata: false) { _ in }
         try require(summary.converted == 2, "CUE tracks were not converted")
-        try require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("01 - Cue Artist - First.mp3").path), "First CUE MP3 is missing")
-        try require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("02 - Cue Artist - Second.mp3").path), "Second CUE MP3 is missing")
+        let outputs = [
+            directory.appendingPathComponent("01 - Cue Artist - First.mp3"),
+            directory.appendingPathComponent("02 - Cue Artist - Second.mp3")
+        ]
+        let probe = FFprobeMetadataProbe()
+        for output in outputs {
+            try require(FileManager.default.fileExists(atPath: output.path), "CUE MP3 is missing: \(output.lastPathComponent)")
+            let snapshot = try await probe.probe(url: output)
+            try require(snapshot.hasEmbeddedArtwork, "CUE MP3 is missing cover art: \(output.lastPathComponent)")
+        }
     }
 
     private static func makeTemporaryDirectory() throws -> URL {
