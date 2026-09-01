@@ -218,7 +218,7 @@ enum FLAC2MP3Error: LocalizedError, Equatable {
         case let .outputMoveFailed(source, destination, reason):
             return "Could not finalize \(source.lastPathComponent) as \(destination.lastPathComponent): \(reason)"
         case let .invalidRequestInterval(value):
-            return "The wait between files must be between 1.0 and 60.0 seconds (received \(value))."
+            return "The wait between MusicBrainz requests must be between 1.0 and 60.0 seconds (received \(value))."
         case let .ffprobeNotFound(candidates):
             return "ffprobe was not found. Checked: \(candidates.joined(separator: ", ")). Install it with Homebrew (`brew install ffmpeg`) and try again."
         case let .metadataProbeFailed(url, reason):

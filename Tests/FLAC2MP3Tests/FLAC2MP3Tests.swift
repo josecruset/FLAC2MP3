@@ -21,6 +21,7 @@ struct FLAC2MP3TestRunner {
             try await testAmbiguousMusicBrainzSearchStopsEnrichment()
             try await testIgnoreMissingEnrichmentContinuesWithoutMetadataOrArtwork()
             try await testRateLimiterSpacesRequests()
+            try await testRateLimiterSkipsWaitAfterIntervalHasElapsed()
             try await testInvalidRequestIntervalIsRejected()
             try await testDisabledMusicBrainzIgnoresRequestInterval()
             try await testFFmpegConversionProducesMP3AndLeavesSourceUntouched()
@@ -166,10 +167,24 @@ struct FLAC2MP3TestRunner {
     private static func testRateLimiterSpacesRequests() async throws {
         let limiter = MusicBrainzRateLimiter(intervalSeconds: 0.02)
         let start = DispatchTime.now().uptimeNanoseconds
-        try await limiter.wait()
-        try await limiter.wait()
+        let events = EventRecorder()
+        try await limiter.wait(onWait: { seconds in events.record(.waiting(seconds: seconds)) })
+        try await limiter.wait(onWait: { seconds in events.record(.waiting(seconds: seconds)) })
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
         try require(elapsed >= 0.015, "Rate limiter did not space requests")
+        try require(events.waitingSeconds.count == 1, "Rate limiter should report only the enforced wait")
+    }
+
+    private static func testRateLimiterSkipsWaitAfterIntervalHasElapsed() async throws {
+        let limiter = MusicBrainzRateLimiter(intervalSeconds: 0.02)
+        let events = EventRecorder()
+        try await limiter.wait(onWait: { seconds in events.record(.waiting(seconds: seconds)) })
+        try await Task.sleep(nanoseconds: 40_000_000)
+        let start = DispatchTime.now().uptimeNanoseconds
+        try await limiter.wait(onWait: { seconds in events.record(.waiting(seconds: seconds)) })
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
+        try require(elapsed < 0.015, "Rate limiter waited even though the configured interval had elapsed")
+        try require(events.waitingSeconds.isEmpty, "Rate limiter reported a wait after the interval had elapsed")
     }
 
     private static func testMusicBrainzSearchSelectsUniqueRelease() async throws {
@@ -200,12 +215,14 @@ struct FLAC2MP3TestRunner {
         ))
         let enricher = MetadataEnricher(requestIntervalSeconds: 1.0, probe: probe, transport: transport)
         let job = ConversionJob(sourceURL: source, outputURL: directory.appendingPathComponent("search.mp3"), coverURL: localCover)
-        let enriched = try await enricher.enrich(job: job) { _ in }
+        let events = EventRecorder()
+        let enriched = try await enricher.enrich(job: job) { event in events.record(event) }
         defer { enricher.cleanup() }
         try require(enriched.metadata?.musicBrainzReleaseID == releaseID, "Unique MusicBrainz search result was not applied")
         try require(enriched.coverURL == localCover, "Local cover fallback was not used after a Cover Art Archive 404")
         let searchURL = await transport.firstURL(containing: "/ws/2/release/")
         try require(searchURL?.query?.contains("fmt=json") == true, "MusicBrainz search did not request JSON")
+        try require(events.waitingSeconds.count == 1, "Expected one wait between MusicBrainz search and release requests")
     }
 
     private static func testInvalidRequestIntervalIsRejected() async throws {
@@ -443,11 +460,18 @@ private final class FixedMetadataProbe: AudioMetadataProbing, @unchecked Sendabl
 private final class EventRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var messages: [String] = []
+    private var waiting: [Double] = []
 
     func record(_ event: ConversionEvent) {
-        guard case let .log(message) = event else { return }
         lock.lock()
-        messages.append(message)
+        switch event {
+        case let .log(message):
+            messages.append(message)
+        case let .waiting(seconds):
+            waiting.append(seconds)
+        default:
+            break
+        }
         lock.unlock()
     }
 
@@ -455,6 +479,12 @@ private final class EventRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return messages
+    }
+
+    var waitingSeconds: [Double] {
+        lock.lock()
+        defer { lock.unlock() }
+        return waiting
     }
 }
 

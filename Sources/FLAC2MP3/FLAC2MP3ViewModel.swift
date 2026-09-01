@@ -154,8 +154,8 @@ final class FLAC2MP3ViewModel: ObservableObject {
             appendLog("Queue contains \(total) output track(s); \(skipped) already exist and will be skipped.")
         case let .waiting(seconds):
             currentProgress = nil
-            status = "Waiting \(String(format: "%.2f", seconds)) s before next file…"
-            appendLog("Waiting \(String(format: "%.2f", seconds)) s before the next file.")
+            status = "Waiting \(String(format: "%.2f", seconds)) s before the next MusicBrainz request…"
+            appendLog("Waiting \(String(format: "%.2f", seconds)) s before the next MusicBrainz request.")
         case let .metadataLookup(path):
             currentFile = path
             status = "Looking up MusicBrainz metadata…"

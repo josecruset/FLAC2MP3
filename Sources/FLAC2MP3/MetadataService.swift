@@ -145,13 +145,26 @@ actor MusicBrainzRateLimiter {
     }
 
     func wait() async throws {
+        try await wait(onWait: { _ in })
+    }
+
+    func wait(onWait: @escaping @Sendable (Double) -> Void) async throws {
         let now = DispatchTime.now().uptimeNanoseconds
+        var waitNanoseconds: UInt64 = 0
         if let lastRequestStart {
             let target = lastRequestStart &+ minimumIntervalNanoseconds
             if now < target {
-                try await Task.sleep(nanoseconds: target - now)
+                waitNanoseconds = target - now
             }
         }
+
+        if waitNanoseconds > 0 {
+            onWait(Double(waitNanoseconds) / 1_000_000_000)
+            try await Task.sleep(nanoseconds: waitNanoseconds)
+        }
+
+        // Record the instant immediately before the caller starts its request.
+        // Conversion time is intentionally not part of this interval.
         lastRequestStart = DispatchTime.now().uptimeNanoseconds
     }
 }
@@ -266,10 +279,13 @@ final class MusicBrainzClient: @unchecked Sendable {
         self.transport = transport
     }
 
-    func resolve(local: TrackMetadata) async throws -> ReleaseDetails? {
+    func resolve(
+        local: TrackMetadata,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> ReleaseDetails? {
         if let releaseID = local.musicBrainzReleaseID, UUID(uuidString: releaseID) != nil {
             if let cached = releaseCache[releaseID] { return cached }
-            guard let details = try await lookupRelease(id: releaseID) else { return nil }
+            guard let details = try await lookupRelease(id: releaseID, onWait: onWait) else { return nil }
             releaseCache[releaseID] = details
             return details
         }
@@ -278,13 +294,13 @@ final class MusicBrainzClient: @unchecked Sendable {
         let hits: [ReleaseSearchHit]
         if let recordingID = local.musicBrainzRecordingID, UUID(uuidString: recordingID) != nil {
             query = "recording ID \(recordingID)"
-            hits = try await lookupRecording(id: recordingID)
+            hits = try await lookupRecording(id: recordingID, onWait: onWait)
         } else if let album = local.album, !album.isEmpty {
             query = releaseQuery(local: local)
-            hits = try await searchReleases(query: query)
+            hits = try await searchReleases(query: query, onWait: onWait)
         } else if let title = local.title, let artist = local.artist, !title.isEmpty, !artist.isEmpty {
             query = recordingQuery(title: title, artist: artist)
-            hits = try await searchRecordings(query: query, local: local)
+            hits = try await searchRecordings(query: query, local: local, onWait: onWait)
         } else {
             return nil
         }
@@ -294,28 +310,40 @@ final class MusicBrainzClient: @unchecked Sendable {
         if eligible.count > 1 {
             throw FLAC2MP3Error.musicBrainzAmbiguous(query, eligible.prefix(8).map(\.candidate))
         }
-        guard let details = try await lookupRelease(id: eligible[0].id) else { return nil }
+        guard let details = try await lookupRelease(id: eligible[0].id, onWait: onWait) else { return nil }
         guard details.metadata(for: local) != nil else { return nil }
         releaseCache[details.id] = details
         return details
     }
 
-    func artwork(for releaseID: String, releaseGroupID: String? = nil) async throws -> URL? {
+    func artwork(
+        for releaseID: String,
+        releaseGroupID: String? = nil
+    ) async throws -> URL? {
         if let cached = artworkCache[releaseID] { return cached }
         if !artworkMissing.contains(releaseID),
-           let artwork = try await fetchArtwork(urlString: "https://coverartarchive.org/release/\(releaseID)/front-500", cacheKey: releaseID) {
+           let artwork = try await fetchArtwork(
+               urlString: "https://coverartarchive.org/release/\(releaseID)/front-500",
+               cacheKey: releaseID
+           ) {
             return artwork
         }
         guard let releaseGroupID, UUID(uuidString: releaseGroupID) != nil else { return nil }
         let groupKey = "group:\(releaseGroupID)"
         if let cached = artworkCache[groupKey] { return cached }
         if artworkMissing.contains(groupKey) { return nil }
-        guard let artwork = try await fetchArtwork(urlString: "https://coverartarchive.org/release-group/\(releaseGroupID)/front-500", cacheKey: groupKey) else { return nil }
+        guard let artwork = try await fetchArtwork(
+            urlString: "https://coverartarchive.org/release-group/\(releaseGroupID)/front-500",
+            cacheKey: groupKey
+        ) else { return nil }
         artworkCache[releaseID] = artwork
         return artwork
     }
 
-    private func fetchArtwork(urlString: String, cacheKey: String) async throws -> URL? {
+    private func fetchArtwork(
+        urlString: String,
+        cacheKey: String
+    ) async throws -> URL? {
         guard let url = URL(string: urlString) else { return nil }
         if let cached = artworkCache[cacheKey] { return cached }
         if artworkMissing.contains(cacheKey) { return nil }
@@ -364,7 +392,10 @@ final class MusicBrainzClient: @unchecked Sendable {
         temporaryDirectory = nil
     }
 
-    private func searchReleases(query: String) async throws -> [ReleaseSearchHit] {
+    private func searchReleases(
+        query: String,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> [ReleaseSearchHit] {
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/release/") else { return [] }
         components.queryItems = [
             URLQueryItem(name: "query", value: query),
@@ -372,12 +403,16 @@ final class MusicBrainzClient: @unchecked Sendable {
             URLQueryItem(name: "fmt", value: "json")
         ]
         guard let url = components.url else { return [] }
-        let root = try await musicBrainzJSON(url: url)
+        let root = try await musicBrainzJSON(url: url, onWait: onWait)
         let values = dictionaries(root["releases"] ?? root["release-list"])
         return values.compactMap(parseReleaseSearchHit)
     }
 
-    private func searchRecordings(query: String, local: TrackMetadata) async throws -> [ReleaseSearchHit] {
+    private func searchRecordings(
+        query: String,
+        local: TrackMetadata,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> [ReleaseSearchHit] {
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/recording/") else { return [] }
         components.queryItems = [
             URLQueryItem(name: "query", value: query),
@@ -385,7 +420,7 @@ final class MusicBrainzClient: @unchecked Sendable {
             URLQueryItem(name: "fmt", value: "json")
         ]
         guard let url = components.url else { return [] }
-        let root = try await musicBrainzJSON(url: url)
+        let root = try await musicBrainzJSON(url: url, onWait: onWait)
         let recordings = dictionaries(root["recordings"] ?? root["recording-list"])
         var result: [ReleaseSearchHit] = []
         for recording in recordings {
@@ -411,14 +446,17 @@ final class MusicBrainzClient: @unchecked Sendable {
         return Array(unique.values).sorted { $0.score > $1.score }
     }
 
-    private func lookupRelease(id: String) async throws -> ReleaseDetails? {
+    private func lookupRelease(
+        id: String,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> ReleaseDetails? {
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/release/\(id)") else { return nil }
         components.queryItems = [
             URLQueryItem(name: "inc", value: "recordings+artist-credits+release-groups+genres+isrcs"),
             URLQueryItem(name: "fmt", value: "json")
         ]
         guard let url = components.url else { return nil }
-        let response = try await musicBrainzResponse(url: url)
+        let response = try await musicBrainzResponse(url: url, onWait: onWait)
         if response.statusCode == 404 { return nil }
         guard (200..<300).contains(response.statusCode) else {
             throw FLAC2MP3Error.musicBrainzHTTP(url, response.statusCode, bodySnippet(response.data))
@@ -435,14 +473,17 @@ final class MusicBrainzClient: @unchecked Sendable {
         }
     }
 
-    private func lookupRecording(id: String) async throws -> [ReleaseSearchHit] {
+    private func lookupRecording(
+        id: String,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> [ReleaseSearchHit] {
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/recording/\(id)") else { return [] }
         components.queryItems = [
             URLQueryItem(name: "inc", value: "releases+artist-credits+isrcs"),
             URLQueryItem(name: "fmt", value: "json")
         ]
         guard let url = components.url else { return [] }
-        let response = try await musicBrainzResponse(url: url)
+        let response = try await musicBrainzResponse(url: url, onWait: onWait)
         if response.statusCode == 404 { return [] }
         guard (200..<300).contains(response.statusCode) else {
             throw FLAC2MP3Error.musicBrainzHTTP(url, response.statusCode, bodySnippet(response.data))
@@ -463,8 +504,11 @@ final class MusicBrainzClient: @unchecked Sendable {
         }
     }
 
-    private func musicBrainzJSON(url: URL) async throws -> [String: Any] {
-        let response = try await musicBrainzResponse(url: url)
+    private func musicBrainzJSON(
+        url: URL,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> [String: Any] {
+        let response = try await musicBrainzResponse(url: url, onWait: onWait)
         guard (200..<300).contains(response.statusCode) else {
             throw FLAC2MP3Error.musicBrainzHTTP(url, response.statusCode, bodySnippet(response.data))
         }
@@ -480,8 +524,11 @@ final class MusicBrainzClient: @unchecked Sendable {
         }
     }
 
-    private func musicBrainzResponse(url: URL) async throws -> HTTPResponse {
-        try await limiter.wait()
+    private func musicBrainzResponse(
+        url: URL,
+        onWait: @escaping @Sendable (Double) -> Void
+    ) async throws -> HTTPResponse {
+        try await limiter.wait(onWait: onWait)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 30
@@ -639,7 +686,10 @@ final class MetadataEnricher: @unchecked Sendable {
             resolution = cached
             onEvent(.log("Reusing MusicBrainz release context for \(job.sourceURL.lastPathComponent)."))
         } else {
-            let resolved = try await client.resolve(local: local)
+            let resolved = try await client.resolve(
+                local: local,
+                onWait: { seconds in onEvent(.waiting(seconds: seconds)) }
+            )
             resolution = resolved.map(Resolution.release) ?? .noMatch
             resolutionCache[resolutionKey] = resolution
             if resolved == nil {

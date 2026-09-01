@@ -26,7 +26,6 @@ struct ConversionService {
 
         var converted = 0
         var skipped = 0
-        var processedMissingOutputs = 0
         for (offset, originalJob) in plan.jobs.enumerated() {
             try Task.checkCancellation()
             let index = offset + 1
@@ -34,11 +33,6 @@ struct ConversionService {
                 skipped += 1
                 onEvent(.skipped(index: index, total: total, job: originalJob))
                 continue
-            }
-
-            if enrichMetadata && processedMissingOutputs > 0 {
-                onEvent(.waiting(seconds: requestIntervalSeconds))
-                try await Task.sleep(nanoseconds: UInt64(requestIntervalSeconds * 1_000_000_000))
             }
 
             let job: ConversionJob
@@ -52,7 +46,6 @@ struct ConversionService {
                 job = originalJob
             }
             try Task.checkCancellation()
-            processedMissingOutputs += 1
             onEvent(.started(index: index, total: total, job: job))
             let temporaryURL = temporaryOutputURL(for: job.outputURL)
             defer {
